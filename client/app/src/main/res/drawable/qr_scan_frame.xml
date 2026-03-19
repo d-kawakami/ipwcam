@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 半透明背景なし、コーナーだけ描画 -->
+    <!-- 左上コーナー -->
+    <item android:top="0dp" android:left="0dp" android:bottom="210dp" android:right="210dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="4dp" android:color="#E94560" />
+            <solid android:color="#00000000" />
+        </shape>
+    </item>
+    <!-- 右上コーナー -->
+    <item android:top="0dp" android:left="210dp" android:bottom="210dp" android:right="0dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="4dp" android:color="#E94560" />
+            <solid android:color="#00000000" />
+        </shape>
+    </item>
+    <!-- 左下コーナー -->
+    <item android:top="210dp" android:left="0dp" android:bottom="0dp" android:right="210dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="4dp" android:color="#E94560" />
+            <solid android:color="#00000000" />
+        </shape>
+    </item>
+    <!-- 右下コーナー -->
+    <item android:top="210dp" android:left="210dp" android:bottom="0dp" android:right="0dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="4dp" android:color="#E94560" />
+            <solid android:color="#00000000" />
+        </shape>
+    </item>
+</layer-list>
