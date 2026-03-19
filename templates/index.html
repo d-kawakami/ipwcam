@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>動画配信</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 16px;
+            font-family: sans-serif;
+            background: #f0f2f5;
+            color: #333;
+        }
+        h1 {
+            font-size: 22px;
+            margin: 0 0 16px 0;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #4caf50;
+            color: #2e7d32;
+        }
+        .main-layout {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+            flex-wrap: wrap;
+        }
+        .video-panel {
+            flex: 1 1 600px;
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+            padding: 16px;
+        }
+        .video-panel h2 {
+            font-size: 16px;
+            margin: 0 0 10px 0;
+            color: #555;
+        }
+        .video-panel img {
+            width: 100%;
+            max-width: 100%;
+            border-radius: 6px;
+            display: block;
+        }
+        .size-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .size-row label {
+            font-size: 13px;
+            color: #555;
+            white-space: nowrap;
+        }
+        .size-row input[type=range] {
+            flex: 1;
+        }
+        .size-row span {
+            font-size: 13px;
+            color: #333;
+            min-width: 40px;
+            text-align: right;
+        }
+        .controls {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 8px 18px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .btn-start  { background: #4caf50; color: #fff; }
+        .btn-stop   { background: #f44336; color: #fff; }
+        .btn-cap    { background: #2196f3; color: #fff; }
+        .btn-submit { background: #ff9800; color: #fff; }
+        button:hover { opacity: 0.85; }
+        #capture-message {
+            font-size: 13px;
+            color: #2e7d32;
+            margin: 6px 0 0 0;
+            min-height: 18px;
+        }
+        .side-panel {
+            flex: 0 0 240px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .card {
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+            padding: 16px;
+        }
+        .card h2 {
+            font-size: 15px;
+            margin: 0 0 10px 0;
+            color: #555;
+        }
+        .qr-wrap {
+            text-align: center;
+        }
+        .qr-wrap img {
+            width: 180px;
+            height: 180px;
+            display: block;
+            margin: 0 auto 8px auto;
+        }
+        .qr-url {
+            font-size: 12px;
+            word-break: break-all;
+            color: #1565c0;
+            background: #e3f2fd;
+            padding: 6px 8px;
+            border-radius: 4px;
+        }
+        .steps {
+            font-size: 12px;
+            line-height: 1.8;
+            color: #555;
+            padding-left: 0;
+            list-style: none;
+            margin: 0;
+        }
+        .steps li::before {
+            content: attr(data-step) " ";
+            font-weight: bold;
+            color: #4caf50;
+        }
+        .audio-row {
+            margin-top: 8px;
+        }
+        audio {
+            width: 100%;
+            margin-top: 6px;
+        }
+        .ip-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 8px;
+        }
+        .ip-row input {
+            flex: 1;
+            padding: 6px 8px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <h1>IP Webcam 動画配信</h1>
+
+    <div class="main-layout">
+
+        <!-- 左：動画 -->
+        <div class="video-panel">
+            <h2>リアルタイム映像</h2>
+            <img id="video-img" src="/video_feed" alt="video feed">
+            <div class="size-row">
+                <label>表示サイズ:</label>
+                <input type="range" id="size-slider" min="20" max="100" value="100" step="5">
+                <span id="size-label">100%</span>
+            </div>
+            <div class="controls">
+                <button class="btn-start" onclick="startRecording()">録画開始</button>
+                <button class="btn-stop"  onclick="stopRecording()">録画停止</button>
+                <button class="btn-cap"   onclick="captureFrame()">キャプチャ</button>
+            </div>
+            <p id="capture-message"></p>
+
+            <div class="audio-row">
+                <h2 style="margin:8px 0 4px;">音声</h2>
+                <audio controls autoplay muted>
+                    <source src="{{ audio_feed }}" type="audio/wav">
+                    お使いのブラウザはオーディオをサポートしていません。
+                </audio>
+            </div>
+        </div>
+
+        <!-- 右：QR + 手順 + IP -->
+        <div class="side-panel">
+
+            <div class="card">
+                <h2>携帯アクセス用 QRコード</h2>
+                <div class="qr-wrap">
+                    <img src="data:image/png;base64,{{ qr_code_data }}" alt="QR Code">
+                    <div class="qr-url">http://{{ server_ip }}:5500/video</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>配信手順 <small style="color:#aaa;">(Android端末)</small></h2>
+                <ol class="steps">
+                    <li data-step="Step1">このページをホスト端末で開く</li>
+                    <li data-step="Step2">携帯端末用アプリでQRコードを読み取る</li>
+                    <li data-step="Step4">アプリが映像ストリーミング開始</li>
+                    <li data-step="Step5">このページに動画が表示される(表示されない場合はF5キーで再読み込み)</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function startRecording() {
+            fetch('/start_recording', { method: 'POST' })
+                .then(r => r.json()).then(d => console.log(d));
+        }
+        function stopRecording() {
+            fetch('/stop_recording', { method: 'POST' })
+                .then(r => r.json()).then(d => console.log(d));
+        }
+        function captureFrame() {
+            fetch('/capture_frame', { method: 'POST' })
+                .then(r => r.json())
+                .then(d => {
+                    const msg = document.getElementById('capture-message');
+                    if (d.status === 'Frame captured') {
+                        msg.textContent = 'キャプチャしました: ' + d.file;
+                    } else {
+                        msg.textContent = 'キャプチャに失敗しました。';
+                    }
+                })
+                .catch(() => {
+                    document.getElementById('capture-message').textContent = 'エラーが発生しました。';
+                });
+        }
+
+        const slider = document.getElementById('size-slider');
+        const sizeLabel = document.getElementById('size-label');
+        const videoImg = document.getElementById('video-img');
+        const savedSize = localStorage.getItem('videoSize');
+        if (savedSize) {
+            slider.value = savedSize;
+            videoImg.style.width = savedSize + '%';
+            sizeLabel.textContent = savedSize + '%';
+        }
+        slider.addEventListener('input', function() {
+            videoImg.style.width = this.value + '%';
+            sizeLabel.textContent = this.value + '%';
+            localStorage.setItem('videoSize', this.value);
+        });
+
+        const clientIp = "{{ client_ip }}";
+        const serverIp = "{{ server_ip }}";
+        if (clientIp === '127.0.0.1') {
+            setTimeout(function() {
+                // location.reload();
+            }, 5000);
+        }
+    </script>
+</body>
+</html>

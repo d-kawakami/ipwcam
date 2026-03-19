@@ -1,4 +1,6 @@
 .env
 .claude
 *.db
-./media/*.*
+media/
+venv/
+
