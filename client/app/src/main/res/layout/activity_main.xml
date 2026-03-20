@@ -13,7 +13,7 @@
         android:id="@+id/tvTitle"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="IP Cam Streamer"
+        android:text="ipcam"
         android:textColor="#E94560"
         android:textSize="26sp"
         android:textStyle="bold"
@@ -38,19 +38,36 @@
         android:layout_marginTop="6dp" />
 
     <!-- アイコン -->
-    <TextView
+    <ImageView
         android:id="@+id/tvIcon"
         android:layout_width="80dp"
         android:layout_height="80dp"
-        android:text="&#128247;"
-        android:textSize="48sp"
-        android:gravity="center"
+        android:src="@drawable/ic_launcher_foreground"
+        android:background="@drawable/icon_bg_round"
+        android:scaleType="fitXY"
+        android:padding="4dp"
+        android:contentDescription="ipcam icon"
         app:layout_constraintTop_toBottomOf="@id/tvSubtitle"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintBottom_toTopOf="@id/btnScanQR"
+        app:layout_constraintBottom_toTopOf="@id/btnHostQR"
         android:layout_marginTop="16dp"
         android:layout_marginBottom="16dp" />
+
+    <!-- QRコードを表示して配信開始ボタン -->
+    <Button
+        android:id="@+id/btnHostQR"
+        android:layout_width="0dp"
+        android:layout_height="52dp"
+        android:text="QRコードを表示して配信開始"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp"
+        android:backgroundTint="#0F7B6C"
+        app:layout_constraintTop_toBottomOf="@id/tvIcon"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/btnScanQR"
+        android:layout_marginBottom="8dp" />
 
     <!-- QRコード読み込みボタン -->
     <Button
@@ -61,7 +78,7 @@
         android:textColor="#FFFFFF"
         android:textSize="15sp"
         android:backgroundTint="#E94560"
-        app:layout_constraintTop_toBottomOf="@id/tvIcon"
+        app:layout_constraintTop_toBottomOf="@id/btnHostQR"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintBottom_toTopOf="@id/tvOr" />

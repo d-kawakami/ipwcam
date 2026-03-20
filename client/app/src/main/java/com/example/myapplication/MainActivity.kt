@@ -14,17 +14,21 @@ import com.google.android.material.textfield.TextInputEditText
 
 class MainActivity : AppCompatActivity() {
 
-    // 権限取得後に接続するURL (nullの場合はQRスキャン)
+    companion object {
+        private const val HOST_MODE = "__host_mode__"
+    }
+
+    // 権限取得後に接続するURL (nullの場合はQRスキャン、HOST_MODEの場合はホスト配信)
     private var pendingUrl: String? = null
 
     private val requestCameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) {
                 val url = pendingUrl
-                if (url != null) {
-                    startStreamingActivity(url)
-                } else {
-                    openQRScanner()
+                when {
+                    url == HOST_MODE -> startHostStreamActivity()
+                    url != null -> startStreamingActivity(url)
+                    else -> openQRScanner()
                 }
             } else {
                 Toast.makeText(this, "カメラ権限が必要です", Toast.LENGTH_SHORT).show()
@@ -47,6 +51,11 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         val etServerUrl = findViewById<TextInputEditText>(R.id.etServerUrl)
+
+        findViewById<Button>(R.id.btnHostQR).setOnClickListener {
+            pendingUrl = HOST_MODE
+            checkCameraPermission()
+        }
 
         findViewById<Button>(R.id.btnScanQR).setOnClickListener {
             pendingUrl = null
@@ -87,11 +96,10 @@ class MainActivity : AppCompatActivity() {
             == PackageManager.PERMISSION_GRANTED
         ) {
             val url = pendingUrl
-            if (url != null) {
-                startStreamingActivity(url)
-                pendingUrl = null
-            } else {
-                openQRScanner()
+            when {
+                url == HOST_MODE -> { startHostStreamActivity(); pendingUrl = null }
+                url != null -> { startStreamingActivity(url); pendingUrl = null }
+                else -> openQRScanner()
             }
         } else {
             requestCameraPermission.launch(Manifest.permission.CAMERA)
@@ -106,5 +114,9 @@ class MainActivity : AppCompatActivity() {
         val intent = Intent(this, StreamingActivity::class.java)
         intent.putExtra(StreamingActivity.EXTRA_SERVER_URL, serverUrl)
         startActivity(intent)
+    }
+
+    private fun startHostStreamActivity() {
+        startActivity(Intent(this, HostStreamActivity::class.java))
     }
 }

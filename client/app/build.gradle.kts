@@ -45,6 +45,8 @@ dependencies {
     implementation(libs.mlkit.barcode)
     // OkHttp for MJPEG streaming
     implementation(libs.okhttp)
+    // ZXing for QR code generation
+    implementation("com.google.zxing:core:3.5.3")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
