@@ -58,6 +58,32 @@
             android:padding="16dp"
             android:gravity="center_horizontal">
 
+            <!-- 配信プレビュー -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="配信中映像"
+                android:textColor="#AAAAAA"
+                android:textSize="11sp"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="4dp" />
+
+            <ImageView
+                android:id="@+id/ivStreamPreview"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="32dp"
+                android:adjustViewBounds="true"
+                android:background="#000000"
+                android:contentDescription="Stream Preview" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#333355"
+                android:layout_marginTop="10dp"
+                android:layout_marginBottom="4dp" />
+
             <!-- QRコード -->
             <ImageView
                 android:id="@+id/ivQrCode"
@@ -131,6 +157,17 @@
 
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
+
+            <!-- 設定ボタン -->
+            <Button
+                android:id="@+id/btnSettings"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="⚙ 配信設定"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                android:backgroundTint="#333355"
+                android:layout_marginTop="12dp" />
 
             <!-- 停止ボタン -->
             <Button

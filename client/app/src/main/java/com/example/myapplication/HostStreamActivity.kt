@@ -1,17 +1,26 @@
 package com.example.myapplication
 
+import android.app.AlertDialog
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Range
+import android.util.Size
 import android.view.OrientationEventListener
 import android.view.Surface
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -41,6 +50,13 @@ class HostStreamActivity : AppCompatActivity() {
         private const val PORT = 8080
         private const val BOUNDARY = "mjpegstream"
         private const val JPEG_QUALITY = 70
+
+        val RESOLUTIONS = listOf(
+            "1920×1080 (FHD)" to Size(1920, 1080),
+            "1280×720 (HD)"   to Size(1280, 720),
+            "640×480 (VGA)"   to Size(640, 480),
+        )
+        val FRAMERATES = listOf(30, 24, 20, 15, 10)
     }
 
     private lateinit var cameraExecutor: ExecutorService
@@ -66,8 +82,15 @@ class HostStreamActivity : AppCompatActivity() {
     private lateinit var tvFrameCount: TextView
     private lateinit var tvClientCount: TextView
     private lateinit var ivQrCode: ImageView
+    private lateinit var ivStreamPreview: ImageView
+
+    @Volatile private var lastPreviewUpdate = 0L
+    @Volatile private var latestPreviewBitmap: Bitmap? = null
 
     private var serverSocket: ServerSocket? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var selectedResolutionIdx = 1  // デフォルト: 1280×720
+    private var selectedFpsIdx = 0         // デフォルト: 30fps
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -78,6 +101,7 @@ class HostStreamActivity : AppCompatActivity() {
         tvFrameCount = findViewById(R.id.tvFrameCount)
         tvClientCount = findViewById(R.id.tvClientCount)
         ivQrCode = findViewById(R.id.ivQrCode)
+        ivStreamPreview = findViewById(R.id.ivStreamPreview)
 
         val ip = getLocalIpAddress()
         if (ip == null) {
@@ -116,6 +140,9 @@ class HostStreamActivity : AppCompatActivity() {
         startHttpServer()
         startStatusUpdater()
 
+        findViewById<Button>(R.id.btnSettings).setOnClickListener {
+            showSettingsDialog()
+        }
         findViewById<Button>(R.id.btnStop).setOnClickListener {
             stopStreaming()
         }
@@ -152,73 +179,116 @@ class HostStreamActivity : AppCompatActivity() {
     }
 
     private fun startCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-        cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(
-                    findViewById<PreviewView>(R.id.previewView).surfaceProvider
-                )
-            }
-
-            imageAnalysis = ImageAnalysis.Builder()
-                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .setTargetRotation(windowManager.defaultDisplay.rotation)
-                .build()
-
-            imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                if (isStreaming.get() && clientQueues.isNotEmpty()) {
-                    val jpegBytes = imageProxyToJpeg(imageProxy)
-                    // 全クライアントのキューへ配信
-                    for (queue in clientQueues) {
-                        if (queue.size >= 3) queue.poll()
-                        queue.offer(jpegBytes)
-                    }
-                    fpsFrameCount++
-                    val now = System.currentTimeMillis()
-                    if (now - lastFpsTime >= 1000) {
-                        currentFps = fpsFrameCount * 1000.0 / (now - lastFpsTime)
-                        fpsFrameCount = 0
-                        lastFpsTime = now
-                    }
-                    frameCount.incrementAndGet()
-                }
-                imageProxy.close()
-            }
-
-            try {
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    this,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                    preview,
-                    imageAnalysis
-                )
-            } catch (e: Exception) {
-                runOnUiThread {
-                    Toast.makeText(this, "カメラエラー: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-            }
+        val future = ProcessCameraProvider.getInstance(this)
+        future.addListener({
+            cameraProvider = future.get()
+            bindCamera()
         }, ContextCompat.getMainExecutor(this))
     }
 
+    @Suppress("DEPRECATION")
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun bindCamera() {
+        val provider = cameraProvider ?: return
+
+        val preview = Preview.Builder().build().also {
+            it.setSurfaceProvider(
+                findViewById<PreviewView>(R.id.previewView).surfaceProvider
+            )
+        }
+
+        val resolution = RESOLUTIONS[selectedResolutionIdx].second
+        val fps = FRAMERATES[selectedFpsIdx]
+
+        val builder = ImageAnalysis.Builder()
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setTargetRotation(windowManager.defaultDisplay.rotation)
+            .setTargetResolution(resolution)
+        Camera2Interop.Extender(builder)
+            .setCaptureRequestOption(
+                CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                Range(fps, fps)
+            )
+        imageAnalysis = builder.build()
+
+        imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+            if (isStreaming.get()) {
+                val hasClients = clientQueues.isNotEmpty()
+                val now = System.currentTimeMillis()
+                val needPreview = now - lastPreviewUpdate >= 500
+
+                if (hasClients || needPreview) {
+                    val rotatedBitmap = imageProxyToRotatedBitmap(imageProxy)
+
+                    if (needPreview) {
+                        lastPreviewUpdate = now
+                        // 回転済みビットマップを1/4に縮小
+                        val sw = rotatedBitmap.width / 4
+                        val sh = rotatedBitmap.height / 4
+                        val previewBmp = Bitmap.createScaledBitmap(rotatedBitmap, sw, sh, false)
+                        val old = latestPreviewBitmap
+                        latestPreviewBitmap = previewBmp
+                        mainHandler.post {
+                            ivStreamPreview.setImageBitmap(previewBmp)
+                            old?.recycle()
+                        }
+                    }
+
+                    if (hasClients) {
+                        val jpegBytes = bitmapToJpeg(rotatedBitmap)
+                        // 全クライアントのキューへ配信
+                        for (queue in clientQueues) {
+                            if (queue.size >= 3) queue.poll()
+                            queue.offer(jpegBytes)
+                        }
+                        fpsFrameCount++
+                        if (now - lastFpsTime >= 1000) {
+                            currentFps = fpsFrameCount * 1000.0 / (now - lastFpsTime)
+                            fpsFrameCount = 0
+                            lastFpsTime = now
+                        }
+                        frameCount.incrementAndGet()
+                    }
+
+                    rotatedBitmap.recycle()
+                }
+            }
+            imageProxy.close()
+        }
+
+        try {
+            provider.unbindAll()
+            provider.bindToLifecycle(
+                this,
+                CameraSelector.DEFAULT_BACK_CAMERA,
+                preview,
+                imageAnalysis
+            )
+        } catch (e: Exception) {
+            runOnUiThread {
+                Toast.makeText(this, "カメラエラー: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
-    private fun imageProxyToJpeg(imageProxy: ImageProxy): ByteArray {
+    private fun imageProxyToRotatedBitmap(imageProxy: ImageProxy): Bitmap {
         val bitmap = imageProxy.toBitmap()
         val extra = if (surfaceRotation == Surface.ROTATION_90) 180 else 0
         val rotation = (imageProxy.imageInfo.rotationDegrees + extra) % 360
-        val finalBitmap = if (rotation != 0) {
+        return if (rotation != 0) {
             val matrix = android.graphics.Matrix().apply { postRotate(rotation.toFloat()) }
             Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
                 .also { bitmap.recycle() }
         } else {
             bitmap
         }
+    }
+
+    private fun bitmapToJpeg(bitmap: Bitmap): ByteArray {
         val baos = ByteArrayOutputStream()
-        finalBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, baos)
-        finalBitmap.recycle()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, baos)
         return baos.toByteArray()
     }
 
@@ -326,6 +396,45 @@ class HostStreamActivity : AppCompatActivity() {
         })
     }
 
+    private fun showSettingsDialog() {
+        val resLabels = RESOLUTIONS.map { it.first }.toTypedArray()
+        val fpsLabels = FRAMERATES.map { "${it} fps" }.toTypedArray()
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(64, 24, 64, 8)
+        }
+        layout.addView(TextView(this).apply { text = "解像度" })
+        val resSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@HostStreamActivity,
+                android.R.layout.simple_spinner_dropdown_item, resLabels)
+            setSelection(selectedResolutionIdx)
+        }
+        layout.addView(resSpinner)
+
+        layout.addView(TextView(this).apply {
+            text = "フレームレート"
+            setPadding(0, 24, 0, 0)
+        })
+        val fpsSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@HostStreamActivity,
+                android.R.layout.simple_spinner_dropdown_item, fpsLabels)
+            setSelection(selectedFpsIdx)
+        }
+        layout.addView(fpsSpinner)
+
+        AlertDialog.Builder(this)
+            .setTitle("配信設定")
+            .setView(layout)
+            .setPositiveButton("適用") { _, _ ->
+                selectedResolutionIdx = resSpinner.selectedItemPosition
+                selectedFpsIdx = fpsSpinner.selectedItemPosition
+                bindCamera()
+            }
+            .setNegativeButton("キャンセル", null)
+            .show()
+    }
+
     private fun stopStreaming() {
         isStreaming.set(false)
         finish()
@@ -339,5 +448,7 @@ class HostStreamActivity : AppCompatActivity() {
         cameraExecutor.shutdown()
         serverExecutor.shutdownNow()
         try { serverSocket?.close() } catch (_: Exception) {}
+        latestPreviewBitmap?.recycle()
+        latestPreviewBitmap = null
     }
 }
