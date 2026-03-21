@@ -25,9 +25,23 @@ android {
             )
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+}
+
+tasks.configureEach {
+    if (name.startsWith("assemble")) {
+        doLast {
+            layout.buildDirectory.dir("outputs/apk").get().asFile
+                .walkTopDown()
+                .filter { it.isFile && it.extension == "apk" && !it.name.startsWith("ipwcam") }
+                .forEach { apk ->
+                    apk.copyTo(File(apk.parentFile, "ipwcam-${android.defaultConfig.versionName}.apk"), overwrite = true)
+                }
+        }
     }
 }
 
