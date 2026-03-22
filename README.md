@@ -1,6 +1,8 @@
 # ipwcam
 
 ローカルエリアネットワーク（LAN）上でAndroidデバイスのカメラ映像をPCのブラウザにリアルタイム配信するシステムの試作品です。
+<br>
+<img src=https://github.com/user-attachments/assets/c92ec4db-c840-445a-ab14-e10f2ce50688 width="300">
 
 ## システム概要
 
