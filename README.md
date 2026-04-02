@@ -1,73 +1,75 @@
 # ipwcam
 
-ローカルエリアネットワーク（LAN）上でAndroidデバイスのカメラ映像をPCのブラウザにリアルタイム配信するシステムの試作品です。
+[日本語版はこちら](./README.ja.md)
+
+A prototype system that streams Android device camera footage to a PC browser in real time over a local area network (LAN).
 <br>
 <img src=https://github.com/user-attachments/assets/c92ec4db-c840-445a-ab14-e10f2ce50688 width="300">
 
-## システム概要
+## System Overview
 
 ```
-[Androidデバイス] --MJPEG over HTTP POST--> [Flaskサーバ] --MJPEG over HTTP GET--> [ブラウザ]
+[Android Device] --MJPEG over HTTP POST--> [Flask Server] --MJPEG over HTTP GET--> [Browser]
 ```
 
-AndroidアプリがカメラフレームをMJPEG形式でFlaskサーバへPUSH送信し、サーバはブラウザ向けにそのまま配信します。接続先URLはQRコードまたは手動入力で指定します。
+The Android app pushes camera frames in MJPEG format to a Flask server, which then streams them directly to a browser. The server URL can be specified by scanning a QR code or entering it manually.
 
-## リポジトリ構成
+## Repository Structure
 
 ```
 ipwcam/
-├── client/   # Androidクライアントアプリ (Kotlin)
-└── server/   # 受信・配信サーバ (Python / Flask)
+├── client/   # Android client app (Kotlin)
+└── server/   # Receive & stream server (Python / Flask)
 ```
 
-各フォルダに詳細なREADMEがあります。
+Each folder contains a detailed README.
 
-- [クライアント詳細](./client/README.md)
-- [サーバ詳細](./server/README.md)
+- [Client details](./client/README.md)
+- [Server details](./server/README.md)
 
-## 技術スタック
+## Tech Stack
 
-| コンポーネント | 言語・フレームワーク |
+| Component | Language / Framework |
 |---|---|
-| Androidクライアント | Kotlin, CameraX, OkHttp, ML Kit |
-| サーバ | Python, Flask, OpenCV |
-| フロントエンド | HTML / JavaScript |
-| ストリーミング形式 | MJPEG (multipart/x-mixed-replace) |
+| Android Client | Kotlin, CameraX, OkHttp, ML Kit |
+| Server | Python, Flask, OpenCV |
+| Frontend | HTML / JavaScript |
+| Streaming Format | MJPEG (multipart/x-mixed-replace) |
 
-## クイックスタート
+## Quick Start
 
-### 1. サーバを起動する
+### 1. Start the server
 
 ```bash
 cd server
-./setup.sh   # 初回のみ
-./start.sh   # Flask サーバ起動 (port 5500)
+./setup.sh   # First time only
+./start.sh   # Start Flask server (port 5500)
 ```
 
-### 2. Androidアプリをビルドする
+### 2. Build the Android app
 
-Android Studio でクライアントプロジェクトを開きビルドします。
+Open the client project in Android Studio and build it.
 
 ```bash
 cd client
 ./gradlew assembleDebug
 ```
 
-### 3. 接続する
+### 3. Connect
 
-1. ブラウザで `http://<サーバのIPアドレス>:5500` を開く
-2. 表示されたQRコードをAndroidアプリでスキャン、またはURLを手動入力
-3. アプリの「配信開始」ボタンで映像が流れ始める
+1. Open `http://<server IP address>:5500` in a browser
+2. Scan the displayed QR code with the Android app, or enter the URL manually
+3. Tap "Start Streaming" in the app — the video feed will begin
 
-## 動作要件
+## Requirements
 
-| 対象 | 要件 |
+| Target | Requirement |
 |---|---|
-| Androidデバイス | Android 8.0以上 (API 26+) |
-| サーバOS | Linux / macOS (bash環境) |
-| Pythonバージョン | Python 3.x |
-| ネットワーク | クライアントとサーバが同一LAN内にいること |
+| Android Device | Android 8.0 or later (API 26+) |
+| Server OS | Linux / macOS (bash environment) |
+| Python Version | Python 3.x |
+| Network | Client and server must be on the same LAN |
 
-## ライセンス
+## License
 
-MIT License — 詳細は [LICENSE](./LICENSE) を参照してください。
+MIT License — see [LICENSE](./LICENSE) for details.

@@ -1,104 +1,106 @@
 # IP Cam Streamer (ipwcam)
 
-Android 向けに試作した **IP Cam Streamer APK** と連携し、同一ネットワーク上の Android 端末のカメラ映像を PC のブラウザでリアルタイム視聴するデモ用 Flask アプリです。
+[日本語版はこちら](./README.ja.md)
 
-画面に表示された QR コードを Android 端末で読み取るだけでストリーミングが開始されます。
+A demo Flask application that works in conjunction with the **IP Cam Streamer APK** for Android, allowing you to view the camera footage from an Android device on the same network in real time via a PC browser.
+
+Simply scan the QR code displayed on screen with an Android device to start streaming.
 
 ---
 
-## ファイル構造
+## File Structure
 
 ```
 ipwcam/
-├── app.py              # Flask サーバー本体
-├── setup.sh            # 仮想環境の作成・依存パッケージのインストール
-├── start.sh            # アプリ起動スクリプト
-├── ipwcam.apk       # Android 向け IP Cam Streamer APK（試作版）
+├── app.py              # Flask server main application
+├── setup.sh            # Creates virtual environment and installs dependencies
+├── start.sh            # Application startup script
+├── ipwcam.apk          # IP Cam Streamer APK for Android (prototype)
 ├── templates/
-│   └── index.html      # メイン画面（QR コード表示・映像再生）
+│   └── index.html      # Main page (QR code display & video playback)
 ├── static/
-│   └── styles.css      # スタイルシート
-├── media/              # 録画・キャプチャ保存先（git 管理外）
-├── venv/               # Python 仮想環境（git 管理外）
+│   └── styles.css      # Stylesheet
+├── media/              # Recording & capture save directory (not tracked by git)
+├── venv/               # Python virtual environment (not tracked by git)
 └── .gitignore
 ```
 
 ---
 
-## 動作の仕組み
+## How It Works
 
-1. PC 側で Flask サーバーを起動すると、サーバーの IP アドレスを埋め込んだ **QR コード**がブラウザ上に表示されます。
-2. Android 端末で **IP Cam Streamer APK** をインストール・起動し、表示された QR コードを読み取ります。
-3. APK が QR コードの URL（`http://<サーバーIP>:5500/video`）へ MJPEG ストリームを POST 送信します。
-4. Flask サーバーが受信したフレームをブラウザへ配信し、映像がリアルタイムで再生されます。
+1. Start the Flask server on the PC — a **QR code** containing the server's IP address is displayed in the browser.
+2. Install and launch the **IP Cam Streamer APK** on the Android device, then scan the displayed QR code.
+3. The APK POST-streams MJPEG to the QR code's URL (`http://<server IP>:5500/video`).
+4. The Flask server receives the frames and streams them to the browser, playing the video in real time.
 
 ---
 
-## セットアップ手順
+## Setup
 
-### 前提条件
+### Prerequisites
 
-- Python 3.8 以上
-- PC と Android 端末が **同一 Wi-Fi ネットワーク**に接続されていること
+- Python 3.8 or later
+- PC and Android device connected to the **same Wi-Fi network**
 
-### 1. APK を Android 端末にインストール
+### 1. Install the APK on the Android Device
 
-`ipwcam.apk` を Android 端末に転送してインストールしてください。
-（提供元不明アプリのインストールを許可する設定が必要な場合があります）
+Transfer `ipwcam.apk` to the Android device and install it.
+(You may need to enable "Install from unknown sources" in device settings.)
 
-### 2. サーバーのセットアップ
+### 2. Set Up the Server
 
 ```bash
 ./setup.sh
 ```
 
-仮想環境 (`venv`) の作成と以下パッケージのインストールが行われます：
+This creates a virtual environment (`venv`) and installs the following packages:
 
 - Flask
 - opencv-python
 - qrcode
 - Pillow
 
-### 3. サーバーの起動
+### 3. Start the Server
 
 ```bash
 ./start.sh
 ```
 
-起動後、ブラウザで以下の URL を開きます：
+After starting, open the following URL in a browser:
 
 ```
 http://localhost:5500/video
 ```
 
-### 4. Android 端末で接続
+### 4. Connect from the Android Device
 
-1. IP Cam Streamer アプリを起動します。
-2. ブラウザ画面に表示された QR コードをスキャンします。
-3. アプリが自動的にストリーミングを開始し、ブラウザ上に映像が表示されます。
+1. Launch the IP Cam Streamer app.
+2. Scan the QR code displayed in the browser.
+3. The app will automatically start streaming and the video will appear in the browser.
 
 ---
 
-## 主な機能
+## Key Features
 
-| 機能 | 説明 |
+| Feature | Description |
 |------|------|
-| QR コード表示 | サーバー IP を含む接続用 QR コードを自動生成 |
-| MJPEG 受信 | Android からの映像ストリームをリアルタイム受信 |
-| ブラウザ配信 | 受信映像をブラウザへ再配信 |
-| 静止画キャプチャ | ストリームから 1 フレームを JPEG 保存 |
-| 動画録画 | ストリームを AVI ファイルとして録画・停止 |
+| QR Code Display | Automatically generates a connection QR code containing the server IP |
+| MJPEG Reception | Receives the video stream from Android in real time |
+| Browser Streaming | Re-streams received video to the browser |
+| Still Capture | Saves a single frame from the stream as JPEG |
+| Video Recording | Records the stream as an AVI file; can be stopped on demand |
 
 ---
 
-## API エンドポイント
+## API Endpoints
 
-| メソッド | パス | 説明 |
+| Method | Path | Description |
 |----------|------|------|
-| GET | `/video` | メイン画面（QR コード・映像表示） |
-| POST | `/video` | Android からの MJPEG ストリーム受信 |
-| GET | `/video_feed` | ブラウザへの MJPEG 配信 |
-| POST | `/set_ip` | クライアント IP の手動設定 |
-| POST | `/start_recording` | 録画開始 |
-| POST | `/stop_recording` | 録画停止 |
-| POST | `/capture_frame` | 静止画キャプチャ |
+| GET | `/video` | Main page (QR code & video display) |
+| POST | `/video` | Receives MJPEG stream from Android |
+| GET | `/video_feed` | MJPEG stream delivery to browser |
+| POST | `/set_ip` | Manually set the client IP |
+| POST | `/start_recording` | Start recording |
+| POST | `/stop_recording` | Stop recording |
+| POST | `/capture_frame` | Capture a still image |
