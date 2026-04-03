@@ -89,6 +89,13 @@
             margin: 6px 0 0 0;
             min-height: 18px;
         }
+        #capture-message.recording {
+            color: #c62828;
+            font-weight: bold;
+        }
+        #capture-message.stopped {
+            color: #1565c0;
+        }
         .side-panel {
             flex: 0 0 240px;
             display: flex;
@@ -212,28 +219,47 @@
     </div>
 
     <script>
+        function setMsg(text, cls) {
+            const msg = document.getElementById('capture-message');
+            msg.textContent = text;
+            msg.className = cls || '';
+        }
+
         function startRecording() {
             fetch('/start_recording', { method: 'POST' })
-                .then(r => r.json()).then(d => console.log(d));
+                .then(r => r.json())
+                .then(d => {
+                    if (d.status === 'Recording started') {
+                        setMsg('● 録画中...', 'recording');
+                    } else {
+                        setMsg('録画開始に失敗しました。');
+                    }
+                })
+                .catch(() => setMsg('エラーが発生しました。'));
         }
         function stopRecording() {
             fetch('/stop_recording', { method: 'POST' })
-                .then(r => r.json()).then(d => console.log(d));
+                .then(r => r.json())
+                .then(d => {
+                    if (d.status === 'Recording stopped') {
+                        setMsg('録画を停止しました: ' + d.file, 'stopped');
+                    } else {
+                        setMsg('録画中ではありません。');
+                    }
+                })
+                .catch(() => setMsg('エラーが発生しました。'));
         }
         function captureFrame() {
             fetch('/capture_frame', { method: 'POST' })
                 .then(r => r.json())
                 .then(d => {
-                    const msg = document.getElementById('capture-message');
                     if (d.status === 'Frame captured') {
-                        msg.textContent = 'キャプチャしました: ' + d.file;
+                        setMsg('キャプチャしました: ' + d.file);
                     } else {
-                        msg.textContent = 'キャプチャに失敗しました。';
+                        setMsg('キャプチャに失敗しました。');
                     }
                 })
-                .catch(() => {
-                    document.getElementById('capture-message').textContent = 'エラーが発生しました。';
-                });
+                .catch(() => setMsg('エラーが発生しました。'));
         }
 
         const slider = document.getElementById('size-slider');

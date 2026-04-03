@@ -30,6 +30,7 @@ client_ip = None
 server_ip = None
 is_recording = False
 record_thread = None
+record_save_path = None
 
 # MJPEG PUSH受信用
 latest_frame = None
@@ -37,7 +38,7 @@ frame_lock = threading.Lock()
 push_active = False
 
 # 画像を保存するディレクトリ
-MEDIA_FOLDER = '../04_photo/uploads'
+MEDIA_FOLDER = '../capture'
 
 app.config['MEDIA_FOLDER'] = MEDIA_FOLDER
 
@@ -280,26 +281,26 @@ def record_video_from_push(save_path):
 @app.route('/start_recording', methods=['POST'])
 def start_recording():
     """Start video recording from the push stream"""
-    global is_recording, record_thread
+    global is_recording, record_thread, record_save_path
     with frame_lock:
         has_frame = latest_frame is not None
     if has_frame and not is_recording:
-        save_path = os.path.join(app.config['MEDIA_FOLDER'], f"video_{time.strftime('%Y%m%d_%H%M%S')}.avi")
+        record_save_path = os.path.join(app.config['MEDIA_FOLDER'], f"video_{time.strftime('%Y%m%d_%H%M%S')}.avi")
         is_recording = True
-        record_thread = threading.Thread(target=record_video_from_push, args=(save_path,), daemon=True)
+        record_thread = threading.Thread(target=record_video_from_push, args=(record_save_path,), daemon=True)
         record_thread.start()
-        return jsonify({"status": "Recording started", "file": save_path})
+        return jsonify({"status": "Recording started", "file": record_save_path})
     return jsonify({"status": "Failed to start recording"}), 400
 
 @app.route('/stop_recording', methods=['POST'])
 def stop_recording():
     """Stop the video recording"""
-    global is_recording
+    global is_recording, record_save_path
     if is_recording:
         is_recording = False
         if record_thread:
             record_thread.join(timeout=5)
-        return jsonify({"status": "Recording stopped"})
+        return jsonify({"status": "Recording stopped", "file": record_save_path})
     return jsonify({"status": "No recording in progress"}), 400
 
 @app.route('/capture_frame', methods=['POST'])
