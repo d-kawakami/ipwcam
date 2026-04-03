@@ -239,31 +239,54 @@ def video_feed():
     return Response(gen_from_push(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
-# Video recording function
-def record_video(video_url, save_path):
-    cap = cv2.VideoCapture(video_url)
-    fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter(save_path, fourcc, 20.0, (640, 480))
+# PUSHで受信したlatest_frameをAVIファイルとして録画するスレッド関数
+def record_video_from_push(save_path):
+    global is_recording, latest_frame, frame_lock
 
-    while is_recording:
-        ret, frame = cap.read()
-        if ret:
-            out.write(frame)
-        else:
+    # 最初のフレームからサイズを取得
+    for _ in range(50):  # 最大5秒待機
+        with frame_lock:
+            first = latest_frame
+        if first:
             break
+        time.sleep(0.1)
+    else:
+        return
 
-    cap.release()
+    nparr = np.frombuffer(first, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return
+    h, w = img.shape[:2]
+
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    out = cv2.VideoWriter(save_path, fourcc, 20.0, (w, h))
+
+    prev_frame = None
+    while is_recording:
+        with frame_lock:
+            frame_data = latest_frame
+        if frame_data and frame_data is not prev_frame:
+            nparr = np.frombuffer(frame_data, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is not None:
+                out.write(frame)
+            prev_frame = frame_data
+        else:
+            time.sleep(0.01)
+
     out.release()
 
 @app.route('/start_recording', methods=['POST'])
 def start_recording():
-    """Start video recording from the IP Webcam"""
-    global is_recording, record_thread, client_ip
-    if client_ip and not is_recording:
-        video_url = f"http://{client_ip}:8080/video"
+    """Start video recording from the push stream"""
+    global is_recording, record_thread
+    with frame_lock:
+        has_frame = latest_frame is not None
+    if has_frame and not is_recording:
         save_path = os.path.join(app.config['MEDIA_FOLDER'], f"video_{time.strftime('%Y%m%d_%H%M%S')}.avi")
         is_recording = True
-        record_thread = threading.Thread(target=record_video, args=(video_url, save_path))
+        record_thread = threading.Thread(target=record_video_from_push, args=(save_path,), daemon=True)
         record_thread.start()
         return jsonify({"status": "Recording started", "file": save_path})
     return jsonify({"status": "Failed to start recording"}), 400
@@ -274,23 +297,21 @@ def stop_recording():
     global is_recording
     if is_recording:
         is_recording = False
-        record_thread.join()  # Wait for the recording thread to finish
+        if record_thread:
+            record_thread.join(timeout=5)
         return jsonify({"status": "Recording stopped"})
     return jsonify({"status": "No recording in progress"}), 400
 
 @app.route('/capture_frame', methods=['POST'])
 def capture_frame():
-    """Capture a single frame from the video stream and save it"""
-    global client_ip
-    if client_ip:
-        video_url = f"http://{client_ip}:8080/video"
-        cap = cv2.VideoCapture(video_url)
-        ret, frame = cap.read()
-        if ret:
-            save_path = os.path.join(app.config['MEDIA_FOLDER'], f"frame_{time.strftime('%Y%m%d_%H%M%S')}.jpg")
-            cv2.imwrite(save_path, frame)
-            cap.release()
-            return jsonify({"status": "Frame captured", "file": save_path})
+    """Capture a single frame from the push stream and save it as JPEG"""
+    with frame_lock:
+        frame_data = latest_frame
+    if frame_data:
+        save_path = os.path.join(app.config['MEDIA_FOLDER'], f"frame_{time.strftime('%Y%m%d_%H%M%S')}.jpg")
+        with open(save_path, 'wb') as f:
+            f.write(frame_data)
+        return jsonify({"status": "Frame captured", "file": save_path})
     return jsonify({"status": "Failed to capture frame"}), 400
 
 @app.template_filter('b64encode')
