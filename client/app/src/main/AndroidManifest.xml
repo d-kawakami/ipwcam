@@ -45,6 +45,12 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:screenOrientation="unspecified" />
 
+        <activity
+            android:name=".ViewerActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:screenOrientation="unspecified" />
+
     </application>
 
 </manifest>

@@ -1,4 +1,4 @@
-package com.example.myapplication
+package com.example.ipwcam
 
 import android.graphics.Bitmap
 import android.os.Bundle

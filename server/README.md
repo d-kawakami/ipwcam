@@ -81,6 +81,24 @@ http://localhost:5500/video
 
 ---
 
+## Notes
+
+### LAN-Only Tool
+
+This application is designed for use within a **local area network (LAN) only**. It does not implement authentication or encryption. Do **not** expose the server to the internet or untrusted networks.
+
+### Flask Debug Mode
+
+The server runs with `debug=True` (see `app.py` line 298):
+
+```python
+app.run(host="0.0.0.0", debug=True, port=5500, threaded=True)
+```
+
+This enables the Werkzeug interactive debugger and automatic reloader, which is useful during development but **should not be used in production environments**. If you deploy this server in a shared or production setting, change `debug=True` to `debug=False`.
+
+---
+
 ## Key Features
 
 | Feature | Description |

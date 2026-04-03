@@ -127,6 +127,9 @@ def receive_mjpeg_push():
                     if body:
                         with frame_lock:
                             latest_frame = body
+    except OSError:
+        # Client disconnected mid-stream (e.g. malformed final chunk)
+        pass
     finally:
         push_active = False
 

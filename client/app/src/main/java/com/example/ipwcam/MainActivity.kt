@@ -1,4 +1,4 @@
-package com.example.myapplication
+package com.example.ipwcam
 
 import android.Manifest
 import android.content.Intent
@@ -16,33 +16,38 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val HOST_MODE = "__host_mode__"
+        private const val VIEW_MODE = "__view_mode__"
     }
 
-    // 権限取得後に接続するURL (nullの場合はQRスキャン、HOST_MODEの場合はホスト配信)
+    // 権限取得後に実行するアクションを識別するための値
+    // null → QRスキャン(配信用), HOST_MODE → ホスト配信, VIEW_MODE → QRスキャン(受信用), それ以外 → 指定URLへ配信
     private var pendingUrl: String? = null
 
     private val requestCameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) {
-                val url = pendingUrl
-                when {
-                    url == HOST_MODE -> startHostStreamActivity()
-                    url != null -> startStreamingActivity(url)
-                    else -> openQRScanner()
-                }
+                dispatchPendingAction()
             } else {
                 Toast.makeText(this, "カメラ権限が必要です", Toast.LENGTH_SHORT).show()
             }
             pendingUrl = null
         }
 
-    private val qrScanLauncher =
+    // サーバーへの配信用QRスキャン結果
+    private val qrScanForStreamLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
                 val serverUrl = result.data?.getStringExtra(QRScanActivity.EXTRA_SERVER_URL)
-                if (serverUrl != null) {
-                    startStreamingActivity(serverUrl)
-                }
+                if (serverUrl != null) startStreamingActivity(serverUrl)
+            }
+        }
+
+    // 端末間受信用QRスキャン結果
+    private val qrScanForViewLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK) {
+                val streamUrl = result.data?.getStringExtra(QRScanActivity.EXTRA_SERVER_URL)
+                if (streamUrl != null) startViewerActivity(streamUrl)
             }
         }
 
@@ -52,21 +57,29 @@ class MainActivity : AppCompatActivity() {
 
         val etServerUrl = findViewById<TextInputEditText>(R.id.etServerUrl)
 
+        // 端末間ダイレクト通信：配信側
         findViewById<Button>(R.id.btnHostQR).setOnClickListener {
             pendingUrl = HOST_MODE
             checkCameraPermission()
         }
 
+        // 端末間ダイレクト通信：受信側
+        findViewById<Button>(R.id.btnScanView).setOnClickListener {
+            pendingUrl = VIEW_MODE
+            checkCameraPermission()
+        }
+
+        // Flaskサーバー連携：QRスキャンで配信
         findViewById<Button>(R.id.btnScanQR).setOnClickListener {
             pendingUrl = null
             checkCameraPermission()
         }
 
+        // Flaskサーバー連携：URL手入力で配信
         findViewById<Button>(R.id.btnConnect).setOnClickListener {
             connectWithManualUrl(etServerUrl.text?.toString())
         }
 
-        // キーボードのGoキーでも接続できるようにする
         etServerUrl.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_GO) {
                 connectWithManualUrl(etServerUrl.text?.toString())
@@ -95,24 +108,40 @@ class MainActivity : AppCompatActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
         ) {
-            val url = pendingUrl
-            when {
-                url == HOST_MODE -> { startHostStreamActivity(); pendingUrl = null }
-                url != null -> { startStreamingActivity(url); pendingUrl = null }
-                else -> openQRScanner()
-            }
+            dispatchPendingAction()
+            pendingUrl = null
         } else {
             requestCameraPermission.launch(Manifest.permission.CAMERA)
         }
     }
 
-    private fun openQRScanner() {
-        qrScanLauncher.launch(Intent(this, QRScanActivity::class.java))
+    private fun dispatchPendingAction() {
+        val url = pendingUrl
+        when {
+            url == HOST_MODE -> startHostStreamActivity()
+            url == VIEW_MODE -> openQRScannerForView()
+            url != null      -> startStreamingActivity(url)
+            else             -> openQRScannerForStream()
+        }
+    }
+
+    private fun openQRScannerForStream() {
+        qrScanForStreamLauncher.launch(Intent(this, QRScanActivity::class.java))
+    }
+
+    private fun openQRScannerForView() {
+        qrScanForViewLauncher.launch(Intent(this, QRScanActivity::class.java))
     }
 
     private fun startStreamingActivity(serverUrl: String) {
         val intent = Intent(this, StreamingActivity::class.java)
         intent.putExtra(StreamingActivity.EXTRA_SERVER_URL, serverUrl)
+        startActivity(intent)
+    }
+
+    private fun startViewerActivity(streamUrl: String) {
+        val intent = Intent(this, ViewerActivity::class.java)
+        intent.putExtra(ViewerActivity.EXTRA_STREAM_URL, streamUrl)
         startActivity(intent)
     }
 
