@@ -123,3 +123,28 @@ Open `http://<server IP>:5500` in a browser to view the live feed.
 ## License
 
 MIT License — see [LICENSE](./LICENSE) for details.
+
+---
+
+## Interval Streaming / Tailscale / Long-run Operation
+
+### Send interval (e.g. monitoring an indicator at a distance)
+
+Set **Send interval (seconds)** on the app's main screen. `0` = real-time (default, same as before), `1` = one frame per second, `60` = one frame per minute. The value is saved and used by:
+
+- **Flask mode** — the app tells the server its interval (`X-Capture-Interval-Ms` header). When the interval is > 0, the browser page automatically switches from MJPEG streaming to refreshing the latest frame, and shows "last received N seconds ago" with a warning if frames stop arriving.
+- **Direct mode** — the sender keeps the latest frame fresh, so a viewer that connects in the middle of an interval sees an image immediately. The interval can also be changed in the sender's settings dialog.
+
+New server endpoints: `GET /latest.jpg` (latest frame as JPEG) and `GET /status` (JSON: sequence, last-frame time, interval).
+
+### Tailscale (4G / different networks)
+
+- **Flask mode**: if the server PC runs Tailscale, the page shows a second QR code for `http://100.x.y.z:5500/video`. A phone on 4G with Tailscale installed can scan it, or you can type the URL manually.
+- **Direct mode**: if the sender has both a LAN and a Tailscale address, the QR contains the LAN URL plus `?alt=<Tailscale IP>`. The viewer tries the reachable one automatically (Tailscale first when the viewer itself is on Tailscale). If the sender only has Tailscale (e.g. on 4G), that address is used.
+- Set `IPWCAM_TAILSCALE_IP` to override server-side detection.
+
+### Long-run operation
+
+While streaming, the app keeps the screen on, holds a CPU wake lock and a Wi-Fi lock, and (once) asks to be excluded from battery optimization. Tap the camera preview to dim the screen to minimum brightness / restore it. Both the sender and the viewer reconnect automatically if the connection drops.
+
+Notes: keeping a phone permanently on charge can swell the battery — use a charge limit or a timer outlet. The Flask debug mode is now off by default (`IPWCAM_DEBUG=1` to enable).

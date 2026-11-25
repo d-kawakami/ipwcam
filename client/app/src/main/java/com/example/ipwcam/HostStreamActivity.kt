@@ -7,6 +7,9 @@ import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.text.InputType
+import android.widget.EditText
 import android.util.Range
 import android.util.Size
 import android.view.OrientationEventListener
@@ -32,8 +35,6 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
-import java.net.Inet4Address
-import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
@@ -69,6 +70,12 @@ class HostStreamActivity : AppCompatActivity() {
     private val clientCount = AtomicLong(0)
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // 送信間隔(ms)。0 = リアルタイム。後から接続した視聴者にも直ちに1枚見せるため最新JPEGを保持
+    @Volatile private var intervalMs = 0L
+    @Volatile private var lastSendElapsed = 0L
+    @Volatile private var latestJpeg: ByteArray? = null
+    private var keepAwake: KeepAwake? = null
+
     private lateinit var imageAnalysis: ImageAnalysis
     private lateinit var orientationEventListener: OrientationEventListener
     @Volatile private var surfaceRotation = Surface.ROTATION_0
@@ -103,16 +110,31 @@ class HostStreamActivity : AppCompatActivity() {
         ivQrCode = findViewById(R.id.ivQrCode)
         ivStreamPreview = findViewById(R.id.ivStreamPreview)
 
-        val ip = getLocalIpAddress()
-        if (ip == null) {
-            Toast.makeText(this, "WiFiまたはLANに接続してください", Toast.LENGTH_LONG).show()
+        // LAN / Tailscale のアドレスを判定。
+        //  - 両方ある: QRはLANアドレス + alt=Tailscaleアドレス(受信側が到達できる方を自動選択)
+        //  - Tailscaleのみ(4G回線など): Tailscaleアドレスを使用
+        val addrs = NetUtil.findLocalAddrs()
+        val primaryIp = addrs.lan ?: addrs.tailscale ?: addrs.other
+        if (primaryIp == null) {
+            Toast.makeText(this, "WiFi・LANまたはTailscaleに接続してください", Toast.LENGTH_LONG).show()
             finish()
             return
         }
+        val altIp = if (addrs.lan != null && addrs.tailscale != null) addrs.tailscale else null
 
-        val streamUrl = "http://$ip:$PORT/stream"
-        tvServerUrl.text = streamUrl
-        showQrCode(streamUrl)
+        val streamUrl = "http://$primaryIp:$PORT/stream"
+        val qrUrl = if (altIp != null) "$streamUrl?alt=$altIp" else streamUrl
+        tvServerUrl.text = if (altIp != null)
+            "LAN: $streamUrl\nTailscale: http://$altIp:$PORT/stream"
+        else
+            streamUrl
+        showQrCode(qrUrl)
+
+        intervalMs = StreamSettings.getIntervalMs(this)
+        // 長時間配信: 画面消灯/CPUスリープ/Wi-Fi省電力を抑止。プレビューをタップで最低輝度に切替
+        keepAwake = KeepAwake(this).also { it.acquire() }
+        KeepAwake.promptIgnoreBatteryOptimizationsOnce(this)
+        findViewById<PreviewView>(R.id.previewView).setOnClickListener { keepAwake?.toggleDim() }
 
         cameraExecutor = Executors.newSingleThreadExecutor()
         serverExecutor = Executors.newCachedThreadPool()
@@ -146,20 +168,6 @@ class HostStreamActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnStop).setOnClickListener {
             stopStreaming()
         }
-    }
-
-    /** NetworkInterfaceから有線/WiFiのIPv4アドレスを取得 */
-    private fun getLocalIpAddress(): String? {
-        val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
-        for (intf in interfaces) {
-            if (!intf.isUp || intf.isLoopback) continue
-            for (addr in intf.inetAddresses) {
-                if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                    return addr.hostAddress
-                }
-            }
-        }
-        return null
     }
 
     private fun showQrCode(content: String) {
@@ -217,8 +225,14 @@ class HostStreamActivity : AppCompatActivity() {
                 val hasClients = clientQueues.isNotEmpty()
                 val now = System.currentTimeMillis()
                 val needPreview = now - lastPreviewUpdate >= 500
+                // 間隔配信: 前回送信から intervalMs 経過したフレームだけ変換・配信する
+                val nowElapsed = SystemClock.elapsedRealtime()
+                val intervalDue = intervalMs == 0L || nowElapsed - lastSendElapsed >= intervalMs
+                // 間隔配信中は視聴者がいなくても定期的に最新JPEGを更新しておく
+                // (後から接続した視聴者に、古すぎない1枚をすぐ見せるため)
+                val dueForSend = intervalDue && (hasClients || intervalMs > 0L)
 
-                if (hasClients || needPreview) {
+                if (dueForSend || needPreview) {
                     val rotatedBitmap = imageProxyToRotatedBitmap(imageProxy)
 
                     if (needPreview) {
@@ -235,8 +249,10 @@ class HostStreamActivity : AppCompatActivity() {
                         }
                     }
 
-                    if (hasClients) {
+                    if (dueForSend) {
+                        lastSendElapsed = nowElapsed
                         val jpegBytes = bitmapToJpeg(rotatedBitmap)
+                        latestJpeg = jpegBytes
                         // 全クライアントのキューへ配信
                         for (queue in clientQueues) {
                             if (queue.size >= 3) queue.poll()
@@ -336,7 +352,7 @@ class HostStreamActivity : AppCompatActivity() {
                 line = reader.readLine()
             }
 
-            val path = requestLine.split(" ").getOrElse(1) { "/" }
+            val path = requestLine.split(" ").getOrElse(1) { "/" }.substringBefore("?")
             if (path == "/stream" || path == "/") {
                 serveStream(socket, output)
             } else {
@@ -353,6 +369,7 @@ class HostStreamActivity : AppCompatActivity() {
     private fun serveStream(socket: Socket, output: OutputStream) {
         socket.soTimeout = 0
         val queue = LinkedBlockingQueue<ByteArray>(5)
+        latestJpeg?.let { queue.offer(it) }  // 間隔配信でも接続直後に最新の1枚を表示
         clientQueues.add(queue)
         clientCount.incrementAndGet()
         runOnUiThread { tvClientCount.text = "視聴中: ${clientCount.get()}台" }
@@ -388,7 +405,7 @@ class HostStreamActivity : AppCompatActivity() {
         mainHandler.post(object : Runnable {
             override fun run() {
                 if (isStreaming.get()) {
-                    tvFps.text = "FPS: %.1f".format(currentFps)
+                    tvFps.text = "FPS: %.2f".format(currentFps)
                     tvFrameCount.text = "送信フレーム数: ${frameCount.get()}"
                     mainHandler.postDelayed(this, 500)
                 }
@@ -423,12 +440,26 @@ class HostStreamActivity : AppCompatActivity() {
         }
         layout.addView(fpsSpinner)
 
+        layout.addView(TextView(this).apply {
+            text = "送信間隔(秒) 0=リアルタイム"
+            setPadding(0, 24, 0, 0)
+        })
+        val intervalEdit = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setText(StreamSettings.formatMsAsSeconds(intervalMs))
+            setSelection(text.length)
+        }
+        layout.addView(intervalEdit)
+
         AlertDialog.Builder(this)
             .setTitle("配信設定")
             .setView(layout)
             .setPositiveButton("適用") { _, _ ->
                 selectedResolutionIdx = resSpinner.selectedItemPosition
                 selectedFpsIdx = fpsSpinner.selectedItemPosition
+                intervalMs = StreamSettings.parseSecondsToMs(intervalEdit.text?.toString())
+                StreamSettings.setIntervalMs(this@HostStreamActivity, intervalMs)
+                lastSendElapsed = 0L
                 bindCamera()
             }
             .setNegativeButton("キャンセル", null)
@@ -442,11 +473,13 @@ class HostStreamActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        orientationEventListener.disable()
+        keepAwake?.release()
+        keepAwake = null
+        if (::orientationEventListener.isInitialized) orientationEventListener.disable()
         isStreaming.set(false)
         mainHandler.removeCallbacksAndMessages(null)
-        cameraExecutor.shutdown()
-        serverExecutor.shutdownNow()
+        if (::cameraExecutor.isInitialized) cameraExecutor.shutdown()
+        if (::serverExecutor.isInitialized) serverExecutor.shutdownNow()
         try { serverSocket?.close() } catch (_: Exception) {}
         latestPreviewBitmap?.recycle()
         latestPreviewBitmap = null

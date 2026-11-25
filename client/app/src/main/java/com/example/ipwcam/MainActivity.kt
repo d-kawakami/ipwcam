@@ -22,6 +22,7 @@ class MainActivity : AppCompatActivity() {
     // 権限取得後に実行するアクションを識別するための値
     // null → QRスキャン(配信用), HOST_MODE → ホスト配信, VIEW_MODE → QRスキャン(受信用), それ以外 → 指定URLへ配信
     private var pendingUrl: String? = null
+    private lateinit var etIntervalSec: TextInputEditText
 
     private val requestCameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -56,6 +57,10 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         val etServerUrl = findViewById<TextInputEditText>(R.id.etServerUrl)
+
+        // 送信間隔(秒)。前回値を復元する
+        etIntervalSec = findViewById(R.id.etIntervalSec)
+        etIntervalSec.setText(StreamSettings.formatMsAsSeconds(StreamSettings.getIntervalMs(this)))
 
         // 端末間ダイレクト通信：配信側
         findViewById<Button>(R.id.btnHostQR).setOnClickListener {
@@ -117,6 +122,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun dispatchPendingAction() {
         val url = pendingUrl
+        // 受信専用(VIEW_MODE)以外は配信なので、送信間隔を保存する
+        if (url != VIEW_MODE) {
+            StreamSettings.setIntervalMs(this, StreamSettings.parseSecondsToMs(etIntervalSec.text?.toString()))
+        }
         when {
             url == HOST_MODE -> startHostStreamActivity()
             url == VIEW_MODE -> openQRScannerForView()

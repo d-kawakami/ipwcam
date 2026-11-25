@@ -150,6 +150,15 @@
             width: 100%;
             margin-top: 6px;
         }
+        #frame-info {
+            font-size: 13px;
+            color: #555;
+            margin: 8px 0 0 0;
+        }
+        #frame-info.stale {
+            color: #c62828;
+            font-weight: bold;
+        }
         .ip-row {
             display: flex;
             gap: 8px;
@@ -173,7 +182,8 @@
         <!-- 左：動画 -->
         <div class="video-panel">
             <h2>リアルタイム映像</h2>
-            <img id="video-img" src="/video_feed" alt="video feed">
+            <img id="video-img" alt="video feed">
+            <p id="frame-info">接続確認中...</p>
             <div class="size-row">
                 <label>表示サイズ:</label>
                 <input type="range" id="size-slider" min="20" max="100" value="100" step="5">
@@ -199,12 +209,23 @@
         <div class="side-panel">
 
             <div class="card">
-                <h2>携帯アクセス用 QRコード</h2>
+                <h2>携帯アクセス用 QRコード (LAN)</h2>
                 <div class="qr-wrap">
                     <img src="data:image/png;base64,{{ qr_code_data }}" alt="QR Code">
                     <div class="qr-url">http://{{ server_ip }}:5500/video</div>
                 </div>
             </div>
+
+            {% if tailscale_ip %}
+            <div class="card">
+                <h2>Tailscale用 QRコード</h2>
+                <div class="qr-wrap">
+                    <img src="data:image/png;base64,{{ qr_code_data_ts }}" alt="Tailscale QR Code">
+                    <div class="qr-url">http://{{ tailscale_ip }}:5500/video</div>
+                </div>
+                <p style="font-size:12px;color:#555;margin:8px 0 0;">4G回線など別ネットワークの端末は、こちらを読み取ります(端末側でもTailscale接続が必要)。</p>
+            </div>
+            {% endif %}
 
             <div class="card">
                 <h2>配信手順 <small style="color:#aaa;">(Android端末)</small></h2>
@@ -276,6 +297,55 @@
             sizeLabel.textContent = this.value + '%';
             localStorage.setItem('videoSize', this.value);
         });
+
+        // --- 表示方式の自動切替 ---
+        // 送信間隔 0 (リアルタイム)  : MJPEGストリーム(/video_feed)
+        // 送信間隔 > 0 (間隔配信)    : 新着のたびに /latest.jpg を取得して更新
+        const infoEl = document.getElementById('frame-info');
+        let mode = null;
+        let lastSeq = -1;
+
+        function setMode(m) {
+            if (m === mode) return;
+            mode = m;
+            lastSeq = -1;
+            if (m === 'stream') {
+                videoImg.src = '/video_feed';
+            } else {
+                videoImg.removeAttribute('src');
+            }
+        }
+
+        async function tick() {
+            try {
+                const r = await fetch('/status', { cache: 'no-store' });
+                const s = await r.json();
+                const intervalSec = s.interval_ms / 1000;
+                setMode(s.interval_ms > 0 ? 'poll' : 'stream');
+                if (mode === 'poll' && s.seq > 0 && s.seq !== lastSeq) {
+                    lastSeq = s.seq;
+                    videoImg.src = '/latest.jpg?seq=' + s.seq;
+                }
+                if (s.last_frame_at) {
+                    const age = s.age_sec;
+                    const limit = Math.max(10, intervalSec * 3 + 5);
+                    const stale = age > limit;
+                    const t = new Date(s.last_frame_at * 1000).toLocaleTimeString();
+                    infoEl.textContent = '最終受信: ' + t + ' (' + Math.round(age) + '秒前)'
+                        + ' / 送信間隔: ' + (intervalSec > 0 ? intervalSec + '秒' : 'リアルタイム')
+                        + (stale ? ' — 受信が途絶えています' : '');
+                    infoEl.className = stale ? 'stale' : '';
+                } else {
+                    infoEl.textContent = 'フレーム未受信(配信端末の接続待ち)';
+                    infoEl.className = '';
+                }
+            } catch (e) {
+                infoEl.textContent = 'サーバーに接続できません';
+                infoEl.className = 'stale';
+            }
+        }
+        setInterval(tick, 1000);
+        tick();
 
         const clientIp = "{{ client_ip }}";
         const serverIp = "{{ server_ip }}";

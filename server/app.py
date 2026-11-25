@@ -11,6 +11,10 @@ import time
 import threading
 import base64
 import qrcode
+import ipaddress
+import re
+import shutil
+import subprocess
 
 
 app = Flask(
@@ -34,8 +38,11 @@ record_save_path = None
 
 # MJPEG PUSH受信用
 latest_frame = None
-frame_lock = threading.Lock()
+frame_lock = threading.Condition()
 push_active = False
+frame_seq = 0              # 受信フレームの連番(新着判定用)
+frame_ts = 0.0             # 最終フレーム受信時刻(サーバー時刻, epoch秒)
+capture_interval_ms = 0    # クライアントが申告した送信間隔(0=リアルタイム)
 
 # 画像を保存するディレクトリ
 MEDIA_FOLDER = '../capture'
@@ -44,6 +51,50 @@ app.config['MEDIA_FOLDER'] = MEDIA_FOLDER
 
 if not os.path.exists(MEDIA_FOLDER):
     os.makedirs(MEDIA_FOLDER)
+
+TAILSCALE_NET = ipaddress.ip_network('100.64.0.0/10')
+
+def _is_tailscale_ip(ip):
+    try:
+        return ipaddress.ip_address(ip) in TAILSCALE_NET
+    except ValueError:
+        return False
+
+def get_tailscale_ipv4():
+    """このサーバーのTailscale IPv4(100.64.0.0/10)を返す。無ければ None。
+    環境変数 IPWCAM_TAILSCALE_IP で手動指定も可能。"""
+    env_ip = os.environ.get('IPWCAM_TAILSCALE_IP')
+    if env_ip and _is_tailscale_ip(env_ip):
+        return env_ip
+    # 1) Tailscaleの仮想アドレス宛の経路から自分側アドレスを得る(外部通信は発生しない)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('100.100.100.100', 80))
+        ip = s.getsockname()[0]
+        if _is_tailscale_ip(ip):
+            return ip
+    except Exception:
+        pass
+    finally:
+        s.close()
+    # 2) tailscale CLI
+    for exe in (shutil.which('tailscale'), '/Applications/Tailscale.app/Contents/MacOS/Tailscale'):
+        if not exe or not os.path.exists(exe):
+            continue
+        try:
+            out = subprocess.run([exe, 'ip', '-4'], capture_output=True, text=True, timeout=3).stdout.split()
+            for ip in out:
+                if _is_tailscale_ip(ip):
+                    return ip
+        except Exception:
+            pass
+    return None
+
+def make_qr_b64(url):
+    qr = qrcode.make(url)
+    buffer = io.BytesIO()
+    qr.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
 def get_server_ipv4():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -90,9 +141,20 @@ def video_endpoint():
         return receive_mjpeg_push()
     return index()
 
+def _commit_frame(body):
+    """受信した1フレームを最新フレームとして保存し、待機中の配信スレッドへ通知"""
+    global latest_frame, frame_seq, frame_ts
+    if not body:
+        return
+    with frame_lock:
+        latest_frame = body
+        frame_seq += 1
+        frame_ts = time.time()
+        frame_lock.notify_all()
+
 def receive_mjpeg_push():
     """AndroidからのMJPEG PUSHを受信してlatest_frameに保存"""
-    global latest_frame, push_active
+    global latest_frame, push_active, frame_seq, frame_ts, capture_interval_ms
 
     content_type = request.content_type or ''
     boundary = None
@@ -106,6 +168,10 @@ def receive_mjpeg_push():
         return "Bad Request: no boundary", 400
 
     push_active = True
+    try:
+        capture_interval_ms = max(0, int(request.headers.get('X-Capture-Interval-Ms', '0')))
+    except ValueError:
+        capture_interval_ms = 0
     sep = ('--' + boundary).encode()
     buf = b''
 
@@ -116,18 +182,34 @@ def receive_mjpeg_push():
                 start = buf.find(sep)
                 if start == -1:
                     break
-                rest = buf[start + len(sep):]
-                end = rest.find(sep)
-                if end == -1:
+                hdr_start = start + len(sep)
+                if len(buf) < hdr_start + 2:
                     break
-                part_data = rest[:end]
-                buf = rest[end:]
-                header_end = part_data.find(b'\r\n\r\n')
-                if header_end != -1:
-                    body = part_data[header_end + 4:].rstrip(b'\r\n')
-                    if body:
-                        with frame_lock:
-                            latest_frame = body
+                if buf[hdr_start:hdr_start + 2] == b'--':
+                    # 終端バウンダリ
+                    buf = b''
+                    break
+                header_end = buf.find(b'\r\n\r\n', hdr_start)
+                if header_end == -1:
+                    break
+                headers = buf[hdr_start:header_end].decode('latin-1').lower()
+                body_start = header_end + 4
+                m = re.search(r'content-length:\s*(\d+)', headers)
+                if m:
+                    # Content-Length があれば次のバウンダリを待たずに即確定する
+                    # (送信間隔が長い場合でも最新の1枚をすぐ表示できる)
+                    n = int(m.group(1))
+                    if len(buf) < body_start + n:
+                        break
+                    _commit_frame(buf[body_start:body_start + n])
+                    buf = buf[body_start + n:]
+                else:
+                    # Content-Length が無い送信側向け: 次のバウンダリで確定
+                    nxt = buf.find(sep, body_start)
+                    if nxt == -1:
+                        break
+                    _commit_frame(buf[body_start:nxt].rstrip(b'\r\n'))
+                    buf = buf[nxt:]
     except OSError:
         # Client disconnected mid-stream (e.g. malformed final chunk)
         pass
@@ -159,10 +241,9 @@ def index():
         audio_feed = None
 
     # QRコード生成(サーバIPを表示)
-    qr = qrcode.make(f"http://{server_ip}:5500/video")
-    buffer = io.BytesIO()
-    qr.save(buffer, format="PNG")
-    qr_code_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+    qr_code_data = make_qr_b64(f"http://{server_ip}:5500/video")
+    tailscale_ip = get_tailscale_ipv4()
+    qr_code_data_ts = make_qr_b64(f"http://{tailscale_ip}:5500/video") if tailscale_ip else None
 
 
 #   client_ip=client_ipとするとclient_ipは常に192.168.10.9に固定される。    
@@ -170,7 +251,8 @@ def index():
 #    client_ip=request.remote_addr とすれば任意のクライアントIPアドレスで利用可能になる。
 #    手順として、クライアント端末側の「IPアドレスを送信」ボタンをおされると、サーバ側のclient_ipに
 #    クライアント端末のIPアドレスが保存され、クライアント端末の撮影動画がサーバ側で表示される。
-    return render_template('index.html', ip_address=ip_address, server_ip=server_ip, client_ip=request.remote_addr, video_feed=video_feed, audio_feed=audio_feed, qr_code_data=qr_code_data)
+    return render_template('index.html', ip_address=ip_address, server_ip=server_ip, client_ip=request.remote_addr, video_feed=video_feed, audio_feed=audio_feed, qr_code_data=qr_code_data,
+                           tailscale_ip=tailscale_ip, qr_code_data_ts=qr_code_data_ts)
 
 def gen(video_url):
     cap = cv2.VideoCapture(video_url)
@@ -225,14 +307,59 @@ def set_ip():
     #return jsonify({"client_ip": client_ip})
 
 def gen_from_push():
-    """MJPEG PUSHで受信したlatest_frameをブラウザに配信"""
+    """MJPEG PUSHで受信したlatest_frameをブラウザに配信。
+    新しいフレームが届いた時だけ送る(間隔配信時の無駄な再送を避ける)。
+    15秒間フレームが無ければ同じフレームを再送して接続維持/切断検知を行う。"""
+    last_seq = -1
+    last_sent = 0.0
     while True:
         with frame_lock:
+            if frame_seq == last_seq:
+                frame_lock.wait(timeout=1.0)
             frame = latest_frame
-        if frame:
+            seq = frame_seq
+        if not frame:
+            continue
+        now = time.time()
+        if seq != last_seq or now - last_sent >= 15:
+            last_seq = seq
+            last_sent = now
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-        time.sleep(0.033)
+                   b'Content-Type: image/jpeg\r\n'
+                   b'Content-Length: ' + str(len(frame)).encode() + b'\r\n\r\n'
+                   + frame + b'\r\n')
+
+@app.route('/latest.jpg')
+def latest_jpg():
+    """最新の1枚をJPEGで返す(間隔配信の閲覧・外部スクリプトからの取得用)"""
+    with frame_lock:
+        frame = latest_frame
+        seq = frame_seq
+        ts = frame_ts
+    if not frame:
+        return "no frame yet", 404
+    resp = Response(frame, mimetype='image/jpeg')
+    resp.headers['Cache-Control'] = 'no-store'
+    resp.headers['X-Frame-Seq'] = str(seq)
+    resp.headers['X-Captured-At'] = f"{ts:.3f}"
+    return resp
+
+@app.route('/status')
+def status():
+    """受信状況(閲覧ページが1秒ごとに参照する)"""
+    with frame_lock:
+        seq = frame_seq
+        ts = frame_ts
+        interval = capture_interval_ms
+    now = time.time()
+    return jsonify({
+        "seq": seq,
+        "last_frame_at": ts or None,
+        "age_sec": (now - ts) if ts else None,
+        "interval_ms": interval,
+        "push_active": push_active,
+        "server_time": now,
+    })
 
 @app.route('/video_feed')
 def video_feed():
@@ -320,4 +447,4 @@ def b64encode_filter(data):
     return base64.b64encode(data).decode('utf-8')
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", debug=True, port=5500, threaded=True)
+    app.run(host="0.0.0.0", debug=os.environ.get("IPWCAM_DEBUG") == "1", port=5500, threaded=True)

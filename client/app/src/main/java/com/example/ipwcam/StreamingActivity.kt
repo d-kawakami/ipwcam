@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
@@ -37,6 +38,7 @@ class StreamingActivity : AppCompatActivity() {
         const val EXTRA_SERVER_URL = "server_url"
         private const val BOUNDARY = "ipcamstreamer_boundary"
         private const val JPEG_QUALITY = 70
+        private const val RECONNECT_DELAY_MS = 3000L
     }
 
     private lateinit var cameraExecutor: ExecutorService
@@ -45,6 +47,11 @@ class StreamingActivity : AppCompatActivity() {
     private val frameCount = AtomicLong(0)
     private var streamingThread: Thread? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 送信間隔(ms)。0 = リアルタイム。最後に送ったフレームの時刻で間引く
+    private var intervalMs = 0L
+    @Volatile private var lastSentElapsed = 0L
+    private var keepAwake: KeepAwake? = null
 
     private lateinit var imageAnalysis: ImageAnalysis
     private lateinit var orientationEventListener: OrientationEventListener
@@ -78,7 +85,17 @@ class StreamingActivity : AppCompatActivity() {
         tvErrorMsg = findViewById(R.id.tvErrorMsg)
         tvLiveBadge = findViewById(R.id.tvLiveBadge)
 
-        tvServerUrl.text = "配信先: $serverUrl"
+        intervalMs = StreamSettings.getIntervalMs(this)
+        tvServerUrl.text = if (intervalMs > 0)
+            "配信先: $serverUrl\n送信間隔: ${StreamSettings.formatMsAsSeconds(intervalMs)}秒"
+        else
+            "配信先: $serverUrl"
+
+        // 長時間配信: 画面消灯/CPUスリープ/Wi-Fi省電力を抑止
+        keepAwake = KeepAwake(this).also { it.acquire() }
+        KeepAwake.promptIgnoreBatteryOptimizationsOnce(this)
+        // プレビューをタップすると画面を最低輝度にする/戻す
+        findViewById<PreviewView>(R.id.previewView).setOnClickListener { keepAwake?.toggleDim() }
 
         cameraExecutor = Executors.newSingleThreadExecutor()
         isStreaming.set(true)
@@ -129,7 +146,11 @@ class StreamingActivity : AppCompatActivity() {
                 .build()
 
             imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                if (isStreaming.get()) {
+                // 送信間隔に満たないフレームは変換せずに破棄(CPU・通信量を節約)
+                val nowElapsed = SystemClock.elapsedRealtime()
+                val due = intervalMs == 0L || nowElapsed - lastSentElapsed >= intervalMs
+                if (isStreaming.get() && due) {
+                    lastSentElapsed = nowElapsed
                     val jpegBytes = imageProxyToJpeg(imageProxy)
                     // キューが満杯なら古いフレームを破棄して新しいフレームを追加
                     if (frameQueue.size >= 3) {
@@ -186,66 +207,85 @@ class StreamingActivity : AppCompatActivity() {
 
     private fun startStreamingThread(serverUrl: String) {
         streamingThread = Thread {
-            try {
-                val client = OkHttpClient.Builder()
-                    .connectTimeout(10, TimeUnit.SECONDS)
-                    .writeTimeout(0, TimeUnit.SECONDS) // ストリーミング中はタイムアウトなし
-                    .readTimeout(0, TimeUnit.SECONDS)
-                    .build()
+            val client = OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .writeTimeout(0, TimeUnit.SECONDS) // ストリーミング中はタイムアウトなし
+                .readTimeout(0, TimeUnit.SECONDS)
+                .build()
 
-                val requestBody = object : RequestBody() {
-                    override fun contentType() =
-                        "multipart/x-mixed-replace; boundary=$BOUNDARY".toMediaType()
+            // 切断(4G圏外・Tailscale再接続・サーバー再起動など)しても配信を続けるため、
+            // 停止ボタンが押されるまで再接続を繰り返す
+            while (isStreaming.get()) {
+                try {
+                    var liveShown = false
+                    val requestBody = object : RequestBody() {
+                        override fun contentType() =
+                            "multipart/x-mixed-replace; boundary=$BOUNDARY".toMediaType()
 
-                    override fun isOneShot() = true
+                        override fun isOneShot() = true
 
-                    override fun writeTo(sink: BufferedSink) {
-                        while (isStreaming.get()) {
-                            val frame = frameQueue.poll(500, TimeUnit.MILLISECONDS) ?: continue
-                            try {
-                                sink.writeUtf8("--$BOUNDARY\r\n")
-                                sink.writeUtf8("Content-Type: image/jpeg\r\n")
-                                sink.writeUtf8("Content-Length: ${frame.size}\r\n")
-                                sink.writeUtf8("\r\n")
-                                sink.write(frame)
-                                sink.writeUtf8("\r\n")
-                                sink.flush()
-                                frameCount.incrementAndGet()
-                            } catch (e: Exception) {
-                                if (isStreaming.get()) {
-                                    runOnUiThread { showError("送信エラー: ${e.message}") }
+                        override fun writeTo(sink: BufferedSink) {
+                            while (isStreaming.get()) {
+                                val frame = frameQueue.poll(500, TimeUnit.MILLISECONDS) ?: continue
+                                try {
+                                    sink.writeUtf8("--$BOUNDARY\r\n")
+                                    sink.writeUtf8("Content-Type: image/jpeg\r\n")
+                                    sink.writeUtf8("Content-Length: ${frame.size}\r\n")
+                                    sink.writeUtf8("\r\n")
+                                    sink.write(frame)
+                                    sink.writeUtf8("\r\n")
+                                    sink.flush()
+                                    frameCount.incrementAndGet()
+                                    if (!liveShown) {
+                                        liveShown = true
+                                        runOnUiThread { showLive() }
+                                    }
+                                } catch (e: Exception) {
+                                    if (isStreaming.get()) {
+                                        runOnUiThread { showError("送信エラー: ${e.message}(再接続します)") }
+                                    }
+                                    break
                                 }
-                                break
+                            }
+                            // ストリーム終端
+                            try {
+                                sink.writeUtf8("--$BOUNDARY--\r\n")
+                                sink.flush()
+                            } catch (_: Exception) {}
+                        }
+                    }
+
+                    val request = Request.Builder()
+                        .url(serverUrl)
+                        .addHeader("User-Agent", "IPCamStreamer/1.0")
+                        // サーバーが「間隔配信中」と判断して表示方式を切り替えるための申告
+                        .addHeader("X-Capture-Interval-Ms", intervalMs.toString())
+                        .post(requestBody)
+                        .build()
+
+                    client.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful && isStreaming.get()) {
+                            runOnUiThread {
+                                showError("サーバーエラー: HTTP ${response.code}(再接続します)")
                             }
                         }
-                        // ストリーム終端
-                        try {
-                            sink.writeUtf8("--$BOUNDARY--\r\n")
-                            sink.flush()
-                        } catch (_: Exception) {}
                     }
-                }
-
-                val request = Request.Builder()
-                    .url(serverUrl)
-                    .addHeader("User-Agent", "IPCamStreamer/1.0")
-                    .post(requestBody)
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful && isStreaming.get()) {
+                } catch (e: InterruptedException) {
+                    // 停止ボタンによる正常終了
+                    break
+                } catch (e: Exception) {
+                    if (isStreaming.get()) {
                         runOnUiThread {
-                            showError("サーバーエラー: HTTP ${response.code}")
+                            showError("接続エラー: ${e.message}(再接続します)")
                         }
                     }
                 }
-            } catch (e: InterruptedException) {
-                // 停止ボタンによる正常終了
-            } catch (e: Exception) {
-                if (isStreaming.get()) {
-                    runOnUiThread {
-                        showError("接続エラー: ${e.message}")
-                    }
+
+                if (!isStreaming.get()) break
+                try {
+                    Thread.sleep(RECONNECT_DELAY_MS)
+                } catch (_: InterruptedException) {
+                    break
                 }
             }
         }.also { it.isDaemon = true }
@@ -256,12 +296,18 @@ class StreamingActivity : AppCompatActivity() {
         mainHandler.post(object : Runnable {
             override fun run() {
                 if (isStreaming.get()) {
-                    tvFps.text = "FPS: %.1f".format(currentFps)
+                    tvFps.text = "FPS: %.2f".format(currentFps)
                     tvFrameCount.text = "送信フレーム数: ${frameCount.get()}"
                     mainHandler.postDelayed(this, 500)
                 }
             }
         })
+    }
+
+    private fun showLive() {
+        tvErrorMsg.visibility = View.GONE
+        tvLiveBadge.text = "● LIVE"
+        tvLiveBadge.setBackgroundColor(0xFFCC0000.toInt())
     }
 
     private fun showError(message: String) {
@@ -280,10 +326,12 @@ class StreamingActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        orientationEventListener.disable()
+        keepAwake?.release()
+        keepAwake = null
+        if (::orientationEventListener.isInitialized) orientationEventListener.disable()
         isStreaming.set(false)
         frameQueue.clear()
         mainHandler.removeCallbacksAndMessages(null)
-        cameraExecutor.shutdown()
+        if (::cameraExecutor.isInitialized) cameraExecutor.shutdown()
     }
 }
